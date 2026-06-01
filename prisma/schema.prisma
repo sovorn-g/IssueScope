@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SyncRunStatus {
+  pending
+  running
+  completed
+  failed
+  partial
+}
+
+model Repository {
+  id              String    @id @default(cuid())
+  githubId        BigInt    @unique
+  owner           String
+  name            String
+  fullName        String
+  htmlUrl         String
+  description     String?
+  defaultBranch   String?
+  openIssuesCount Int?
+  lastSyncedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  issues          Issue[]
+  syncRuns        SyncRun[]
+
+  @@index([owner, name])
+  @@map("repositories")
+}
+
+model Issue {
+  id              String    @id @default(cuid())
+  repositoryId    String
+  githubId        BigInt    @unique
+  number          Int
+  title           String
+  body            String?
+  state           String
+  htmlUrl         String
+  authorLogin     String?
+  labels          String[]  @default([])
+  commentCount    Int       @default(0)
+  contentHash     String
+  githubCreatedAt DateTime
+  githubUpdatedAt DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  repository      Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  comments        IssueComment[]
+  analysis        IssueAnalysis?
+  embedding       IssueEmbedding?
+  duplicateSources DuplicateCandidate[] @relation("DuplicateSource")
+  duplicateTargets DuplicateCandidate[] @relation("DuplicateTarget")
+
+  @@unique([repositoryId, number])
+  @@index([repositoryId, githubUpdatedAt])
+  @@map("issues")
+}
+
+model IssueComment {
+  id              String   @id @default(cuid())
+  issueId         String
+  githubId        BigInt   @unique
+  body            String
+  authorLogin     String?
+  htmlUrl         String?
+  githubCreatedAt DateTime
+  githubUpdatedAt DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  issue           Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@map("issue_comments")
+}
+
+model IssueAnalysis {
+  id                    String   @id @default(cuid())
+  issueId               String   @unique
+  severity              String?
+  severityReason        String?
+  missingRepro          Boolean?
+  missingReproReason    String?
+  contentHash           String
+  analysisStatus        String   @default("pending")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  issue                 Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@map("issue_analyses")
+}
+
+model IssueEmbedding {
+  id          String   @id @default(cuid())
+  issueId     String   @unique
+  // Phase 3 can migrate this to pgvector. JSON keeps Phase 2 portable.
+  embedding   Json?
+  model       String?
+  contentHash String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  issue       Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@map("issue_embeddings")
+}
+
+model DuplicateCandidate {
+  id            String   @id @default(cuid())
+  sourceIssueId String
+  targetIssueId String
+  score         Float
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  sourceIssue   Issue    @relation("DuplicateSource", fields: [sourceIssueId], references: [id], onDelete: Cascade)
+  targetIssue   Issue    @relation("DuplicateTarget", fields: [targetIssueId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceIssueId, targetIssueId])
+  @@map("duplicate_candidates")
+}
+
+model SyncRun {
+  id              String        @id @default(cuid())
+  repositoryId    String?
+  repositoryFullName String?
+  status          SyncRunStatus @default(pending)
+  currentStep     String?
+  issuesFetched   Int           @default(0)
+  issuesStored    Int           @default(0)
+  errorMessage    String?
+  startedAt       DateTime      @default(now())
+  completedAt     DateTime?
+
+  repository      Repository?   @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+
+  @@map("sync_runs")
+}

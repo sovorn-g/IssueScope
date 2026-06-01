@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 48 33% 94%;
+  --foreground: 222 42% 11%;
+  --card: 46 35% 97%;
+  --card-foreground: 222 42% 11%;
+  --primary: 216 84% 15%;
+  --primary-foreground: 48 40% 96%;
+  --secondary: 42 42% 86%;
+  --secondary-foreground: 222 42% 11%;
+  --muted: 42 28% 88%;
+  --muted-foreground: 218 16% 38%;
+  --accent: 173 54% 36%;
+  --accent-foreground: 48 40% 96%;
+  --destructive: 0 72% 45%;
+  --destructive-foreground: 48 40% 96%;
+  --border: 220 18% 78%;
+  --input: 220 18% 78%;
+  --ring: 173 54% 36%;
+  --radius: 0.9rem;
+}
+
+* { border-color: hsl(var(--border)); }
+body {
+  min-height: 100vh;
+  color: hsl(var(--foreground));
+  background:
+    radial-gradient(circle at 12% 8%, rgba(28, 116, 108, .18), transparent 27rem),
+    radial-gradient(circle at 84% 0%, rgba(186, 74, 44, .14), transparent 25rem),
+    linear-gradient(135deg, #f5efe2 0%, #eef1e8 45%, #ebe2d2 100%);
+}
+body:before { content:""; position:fixed; inset:0; pointer-events:none; opacity:.35; background-image: linear-gradient(rgba(15,23,42,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,.045) 1px, transparent 1px); background-size: 28px 28px; mask-image: radial-gradient(circle at center, black, transparent 80%); }
+::selection { background: #164e63; color: #fff7ed; }
