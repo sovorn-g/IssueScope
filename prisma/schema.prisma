@@ -103,8 +103,7 @@ model IssueAnalysis {
 model IssueEmbedding {
   id          String   @id @default(cuid())
   issueId     String   @unique
-  // Phase 3 can migrate this to pgvector. JSON keeps Phase 2 portable.
-  embedding   Json?
+  embedding   Unsupported("vector")?
   model       String?
   contentHash String
   createdAt   DateTime @default(now())

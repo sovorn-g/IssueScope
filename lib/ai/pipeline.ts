@@ -118,7 +118,20 @@ async function embedChangedIssues(issues: DbIssue[]) {
       console.info("[ai] embeddings:batch:start", { batchIndex: Math.floor(i / EMBEDDING_BATCH) + 1, issueCount: batch.length, issueNumbers: batch.map((issue) => issue.number) });
       const embeddings = await embedIssueTexts(batch.map(embeddingInput));
       console.info("[ai] embeddings:batch:received", { batchIndex: Math.floor(i / EMBEDDING_BATCH) + 1, embeddingCount: embeddings.length, dimensions: embeddings[0]?.length ?? 0 });
-      await Promise.all(batch.map((issue, index) => prisma.issueEmbedding.upsert({ where: { issueId: issue.id }, create: { issueId: issue.id, contentHash: issue.contentHash, embedding: embeddings[index] }, update: { contentHash: issue.contentHash, embedding: embeddings[index] } })));
+      // Raw SQL required: Prisma can't serialize Unsupported("vector") fields
+      for (let j = 0; j < batch.length; j++) {
+        const issue = batch[j];
+        const vectorStr = `[${embeddings[j].join(",")}]`;
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO issue_embeddings (id, "issueId", embedding, "contentHash", "updatedAt")
+           VALUES ($1, $2, $3::vector, $4, NOW())
+           ON CONFLICT ("issueId") DO UPDATE SET
+             embedding = EXCLUDED.embedding,
+             "contentHash" = EXCLUDED."contentHash",
+             "updatedAt" = NOW()`,
+          crypto.randomUUID(), issue.id, vectorStr, issue.contentHash,
+        );
+      }
       completed += batch.length;
     } catch (error) {
       failedBatches++;
@@ -130,17 +143,41 @@ async function embedChangedIssues(issues: DbIssue[]) {
 }
 
 async function refreshDuplicateCandidates(repositoryId: string) {
-  const issues = await prisma.issue.findMany({ where: { repositoryId }, include: { embedding: true } });
+  // Delete all existing candidates for this repo before rebuilding
   const deleted = await prisma.duplicateCandidate.deleteMany({ where: { sourceIssue: { repositoryId } } });
-  let created = 0;
-  console.info("[ai] duplicates:start", { repositoryId, issueCount: issues.length, deleted: deleted.count, threshold: DUPLICATE_THRESHOLD });
-  for (const source of issues) {
-    const a = source.embedding?.embedding as number[] | undefined;
-    if (!Array.isArray(a)) continue;
-    const matches = issues.filter((target) => target.id !== source.id && Array.isArray(target.embedding?.embedding)).map((target) => ({ target, score: cosine(a, target.embedding!.embedding as number[]) })).filter((m) => m.score >= DUPLICATE_THRESHOLD).sort((x, y) => y.score - x.score).slice(0, 3);
-    await Promise.all(matches.map((m) => prisma.duplicateCandidate.upsert({ where: { sourceIssueId_targetIssueId: { sourceIssueId: source.id, targetIssueId: m.target.id } }, create: { sourceIssueId: source.id, targetIssueId: m.target.id, score: m.score, reason: "Semantic embedding similarity" }, update: { score: m.score, reason: "Semantic embedding similarity" } })));
-    created += matches.length;
-  }
+  console.info("[ai] duplicates:start", { repositoryId, deleted: deleted.count, threshold: DUPLICATE_THRESHOLD });
+
+  // Single pgvector query: find all pairs above threshold using cosine distance (<=>)
+  // No top-3 truncation — all pairs above threshold are stored for accurate DFS grouping
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO duplicate_candidates (id, "sourceIssueId", "targetIssueId", score, reason)
+     SELECT
+       gen_random_uuid()::text,
+       a."issueId",
+       b."issueId",
+       1 - (a.embedding <=> b.embedding),
+       'Semantic embedding similarity'
+     FROM issue_embeddings a
+     JOIN issue_embeddings b
+       ON b."issueId" != a."issueId"
+     WHERE a."issueId" IN (SELECT id FROM issues WHERE "repositoryId" = $1)
+       AND b."issueId" IN (SELECT id FROM issues WHERE "repositoryId" = $1)
+       AND a.embedding IS NOT NULL
+       AND b.embedding IS NOT NULL
+       AND 1 - (a.embedding <=> b.embedding) >= $2
+     ON CONFLICT ("sourceIssueId", "targetIssueId") DO UPDATE SET
+       score = EXCLUDED.score,
+       reason = EXCLUDED.reason`,
+    repositoryId,
+    DUPLICATE_THRESHOLD,
+  );
+
+  // Count final candidates after upsert
+  const countResult: Array<{ count: bigint }> = await prisma.$queryRawUnsafe(
+    `SELECT COUNT(*)::bigint as count FROM duplicate_candidates WHERE "sourceIssueId" IN (SELECT id FROM issues WHERE "repositoryId" = $1)`,
+    repositoryId,
+  );
+  const created = Number(countResult[0]?.count ?? 0);
   console.info("[ai] duplicates:done", { repositoryId, created });
   return { created };
 }
@@ -151,8 +188,4 @@ function chunk<T>(items: T[], size: number) {
   return chunks;
 }
 
-function cosine(a: number[], b: number[]) {
-  let dot = 0, an = 0, bn = 0;
-  for (let i = 0; i < Math.min(a.length, b.length); i++) { dot += a[i] * b[i]; an += a[i] * a[i]; bn += b[i] * b[i]; }
-  return an && bn ? dot / (Math.sqrt(an) * Math.sqrt(bn)) : 0;
-}
+
